@@ -1,0 +1,31 @@
+# Stage 1: Postgres source only. WAL tuned for later logical replication (Debezium).
+
+services:
+  postgres:
+    image: postgres:15
+    env_file:
+      - .env
+    # Host 5433 -> container 5432 (avoids clashing with a local Postgres on 5432).
+    ports:
+      - "5434:5432"
+    volumes:
+      # Named volume: survives compose down (without -v); init scripts run only on first create.
+      - postgres_data:/var/lib/postgresql/data
+      # Runs once on empty data dir; keep path stable for README / scripts.
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+    healthcheck:
+      # Uses credentials from env_file; interval + retries as requested.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      retries: 3
+
+volumes:
+  postgres_data:
