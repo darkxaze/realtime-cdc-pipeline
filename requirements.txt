@@ -1,0 +1,11 @@
+psycopg2-binary==2.9.9
+faker==22.0.0
+python-dotenv==1.0.0
+confluent-kafka==2.3.0
+clickhouse-driver==0.2.7
+great-expectations==0.18.12
+dbt-core==1.7.4
+dbt-clickhouse==1.7.2
+numpy==1.26.3
+requests==2.31.0
+docker==7.0.0

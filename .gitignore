@@ -1,0 +1,40 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/
+*.egg-info/
+.DS_Store
+.pytest_cache/
+*.log
+dbt/target/
+dbt/logs/
+.terraform/
+*.tfstate
+*.tfstate.backup
+benchmarks/*.json
+
+# AI tools
+.cursor/
+.cursorrules
+.aider*
+.claude/
+.ai/
+cursor.log
+CLAUDE.md
+CONTEXT.md
+
+# Cursor IDE
+.cursor/
+.vscode/
+*.code-workspace
+
+# Claude Code
+.claude/
+.anthropic/
+
+# AI chat history (if any gets saved locally)
+.ai/
+.aider*
+
