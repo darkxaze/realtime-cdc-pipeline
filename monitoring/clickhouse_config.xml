@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<!-- Drop-in for docker-compose: ./monitoring/clickhouse_config.xml → config.d/prometheus.xml -->
+<clickhouse>
+    <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>9363</port>
+        <!-- metrics: gauge counters (Query, Merge, TCPConnection, etc.) for saturation alerts -->
+        <metrics>true</metrics>
+        <!-- events: cumulative ProfileEvents (InsertedRows, IO wait) for throughput / latency -->
+        <events>true</events>
+        <!-- asynchronous_metrics: background merge/replication lag without polling system.tables -->
+        <asynchronous_metrics>true</asynchronous_metrics>
+    </prometheus>
+</clickhouse>

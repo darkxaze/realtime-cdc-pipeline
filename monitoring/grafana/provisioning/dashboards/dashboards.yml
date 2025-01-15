@@ -1,0 +1,15 @@
+# Grafana file-provider path must match the container mount in docker-compose.yml:
+#   ./monitoring/grafana/dashboards → /var/lib/grafana/dashboards
+# JSON dashboards (pipeline_health.json, flash_sale_ops.json) are picked up on a 10s poll.
+apiVersion: 1
+
+providers:
+  - name: default
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
