@@ -1,0 +1,25 @@
+# Prometheus scrape config for the CDC pipeline (docker-compose service DNS names).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Kafka Connect / Debezium (JMX → Prometheus exporter on :9101).
+  # Key metrics: kafka_connect_source_record_poll_rate (CDC throughput),
+  # kafka_connect_connector_status (RUNNING/FAILED), task error counts.
+  - job_name: kafka-connect
+    static_configs:
+      - targets: ["debezium:9101"]
+
+  # Flink JobManager Prometheus reporter (:9249).
+  # Key metrics: flink_taskmanager_job_task_operator_currentInputEventTimeLag (processing lag ms),
+  # flink_jobmanager_job_lastCheckpointDuration, numRecordsIn/OutPerSecond per operator.
+  - job_name: flink
+    static_configs:
+      - targets: ["flink-jobmanager:9249"]
+
+  # ClickHouse built-in Prometheus endpoint (:9363; enable <prometheus> in server config).
+  # Key metrics: ClickHouseMetrics_Query, ProfileEvents_InsertedRows, AsyncMetrics_ReplicasMaxAbsoluteDelay.
+  - job_name: clickhouse
+    static_configs:
+      - targets: ["clickhouse:9363"]

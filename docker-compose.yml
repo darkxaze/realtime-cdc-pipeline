@@ -1,5 +1,6 @@
 # Stage 1: Postgres source (WAL tuned for logical replication).
 # Stage 2: Kafka ecosystem + Debezium CDC connector.
+# Stage 3: ClickHouse sink + Flink stream processing + Prometheus/Grafana.
 
 services:
   postgres:
@@ -34,10 +35,14 @@ services:
     image: confluentinc/cp-zookeeper:7.5.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+    # Zookeeper takes ~20s to bind port 2181; generous start_period avoids false unhealthy during init.
+    # ruok disabled in ZK 3.5+; srvr | grep Mode confirms the server is serving.
     healthcheck:
-      test: ["CMD-SHELL", "echo ruok | nc localhost 2181"]
-      interval: 5s
-      retries: 3
+      test: ["CMD", "bash", "-c", "echo srvr | nc localhost 2181 | grep Mode"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # Event bus: Debezium publishes WAL changes here; Flink and Connect consume downstream.
   # service_healthy on zookeeper: broker registration fails if ZK is up but not accepting sessions.
@@ -55,12 +60,13 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       # true: Debezium can auto-create CDC topics; production should pre-create topics with replication/partitions.
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    # Generous start_period (90s) and retries (10): Kafka needs time to join Zookeeper and elect controller.
     healthcheck:
-      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 40s
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 90s
 
   # Avro schema store for Debezium and Flink serializers; topics stay compact and versioned.
   # service_healthy on kafka: registry bootstraps internal topics; a listening port is not enough.
@@ -96,6 +102,7 @@ services:
         condition: service_healthy
     ports:
       - "8083:8083"
+    # JMX metrics disabled - agent JAR not included in debezium/connect:2.4 image
     environment:
       BOOTSTRAP_SERVERS: kafka:29092
       GROUP_ID: 1
@@ -109,5 +116,128 @@ services:
       interval: 5s
       retries: 3
 
+  # Analytics sink: ReplacingMergeTree dimension tables + metrics/DLQ tables from schema.sql.
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.11
+    # 8123: HTTP interface — JDBC, Flink sink, Grafana, and benchmarks use HTTP only.
+    # Native TCP 9000 is not published to the host (not needed for this project).
+    # Shell access: docker compose exec clickhouse clickhouse-client
+    ports:
+      - "8123:8123"    # HTTP
+      - "19000:9000"   # native protocol
+      # 9363 exposes ClickHouse Prometheus metrics endpoint to host and Prometheus scraper.
+      - "9363:9363"
+    volumes:
+      - ./clickhouse/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - clickhouse_data:/var/lib/clickhouse
+      # config.d drop-in: enables built-in Prometheus endpoint on :9363 (see monitoring/prometheus.yml).
+      - ./clickhouse/prometheus.xml:/etc/clickhouse-server/config.d/prometheus.xml
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: ""
+      CLICKHOUSE_PROMETHEUS_PORT: 9363
+    # ClickHouse Kafka Engine tables try to connect to Kafka on startup.
+    # Without this dependency, ClickHouse starts before Kafka is ready and
+    # healthcheck fails due to Kafka connection errors.
+    depends_on:
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      retries: 3
+    # ClickHouse opens many concurrent connections (merges, inserts, queries); default Docker
+    # nofile (1024) causes "Too many open files" under CDC load. 262144 matches upstream guidance.
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  # Custom Flink image with Kafka connectors and Python packages baked in.
+  # Flink JobManager: submits CDC → ClickHouse jobs; REST/UI on container 8081.
+  flink-jobmanager:
+    build: ./flink
+    command: jobmanager
+    ports:
+      - "8082:8081"   # Flink UI (host 8082; schema-registry uses host 8081)
+      # 9249 exposes Prometheus metrics reporter to host and Prometheus scraper.
+      - "9249:9249"
+    environment:
+      # Built-in PrometheusReporter: Flink metrics on :9249 for prometheus.yml scrape.
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+        state.backend: rocksdb
+        state.checkpoints.dir: file:///tmp/flink-checkpoints
+        execution.checkpointing.interval: 30000
+        metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+        metrics.reporter.prom.port: 9249
+    volumes:
+      - ./flink:/opt/flink/jobs
+      # Named volume: RocksDB checkpoints persist across restarts; path matches state.checkpoints.dir.
+      - flink_checkpoints:/tmp/flink-checkpoints
+    depends_on:
+      kafka:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/overview || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    # RocksDB state backend: changelog keyed state (upserts, windows) spills to disk instead of
+    # heap-only; survives TaskManager restarts without replaying the full Kafka topic from offset 0.
+    # Rejected: hashmap backend — OOM risk when flash-sale inventory updates spike keyed state size.
+    # 30s checkpoint interval: balances recovery time (~30s replay) vs checkpoint I/O during 50 TPS;
+    # shorter intervals add RocksDB sync overhead; longer widens at-least-once duplicate window on failure.
+
+  flink-taskmanager:
+    build: ./flink
+    command: taskmanager
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+    environment:
+      FLINK_PROPERTIES: |
+        jobmanager.rpc.address: flink-jobmanager
+        taskmanager.numberOfTaskSlots: 4
+    volumes:
+      - ./flink:/opt/flink/jobs
+      - flink_checkpoints:/tmp/flink-checkpoints
+
+  prometheus:
+    image: prom/prometheus:v2.48.0
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+    # Host port 3000 was already in use; map container 3000 → host 3001. Access Grafana at http://localhost:3001
+    ports:
+      - "3001:3000"
+    depends_on:
+      prometheus:
+        condition: service_started
+      clickhouse:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  clickhouse_data:
+  flink_checkpoints:
+
+# Explicit name only; let Docker manage addressing to avoid config drift.
+networks:
+  default:
+    name: cdc_pipeline_net
