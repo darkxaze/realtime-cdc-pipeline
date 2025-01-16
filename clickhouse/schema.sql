@@ -263,3 +263,28 @@ SELECT
     parseDateTime64BestEffort(updated_at) AS updated_at,
     is_deleted
 FROM customers_kafka_queue;
+
+-- =====================================================
+-- ORDER METRICS MATERIALIZED VIEW
+-- =====================================================
+-- Why ClickHouse MV not Flink windowing:
+-- PROCTIME() tumbling windows in Flink Table API do not emit results when the source goes
+-- idle between bursts. ClickHouse Materialized View aggregates directly from orders_current
+-- on every INSERT, providing reliable per-minute metrics without Flink windowing complexity.
+-- Production would use Flink event-time windows with Kafka rowtime metadata for exactly-once.
+
+-- MV triggers on every INSERT into orders_current (via orders_kafka_mv).
+-- toStartOfMinute groups all orders in the same minute into one metrics row.
+-- ReplacingMergeTree on orders_current may hold duplicate order_id versions before merge;
+-- use FINAL on orders_current for exact counts in ad-hoc queries — MV runs on raw inserts.
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS order_metrics_mv
+TO order_metrics_per_minute AS
+SELECT
+    toStartOfMinute(created_at) AS window_start,
+    toUInt32(count()) AS orders_count,
+    sum(total_amount) AS revenue,
+    avg(total_amount) AS avg_order_value,
+    toUInt32(countIf(status = 'cancelled')) AS cancellations_count
+FROM orders_current
+WHERE is_deleted = 0;
