@@ -17,8 +17,8 @@
     "snapshot.mode": "initial",
     "topic.prefix": "ecommerce",
     "key.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "key.converter.schemas.enable": "false",
     "value.converter": "org.apache.kafka.connect.json.JsonConverter",
-    "value.converter.schemas.enable": "true"
+    "key.converter.schemas.enable": "false",
+    "value.converter.schemas.enable": "false"
   }
 }
