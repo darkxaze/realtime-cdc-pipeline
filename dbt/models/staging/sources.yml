@@ -1,0 +1,59 @@
+version: 2
+
+sources:
+  - name: default
+    description: ClickHouse CDC sink tables (ReplacingMergeTree, populated by Flink materialized views).
+    database: default
+    tables:
+      - name: orders_current
+        description: >
+          Latest order header per order_id. Multiple physical versions per order_id
+          exist until background merge; staging uses FINAL for query-time deduplication.
+        columns:
+          - name: order_id
+            description: Primary business key; ORDER BY key in ReplacingMergeTree.
+            tests:
+              - not_null
+          - name: customer_id
+            description: FK to customers_current.
+          - name: status
+            description: Order lifecycle state from Postgres CDC.
+            tests:
+              - accepted_values:
+                  values: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled']
+          - name: total_amount
+            description: Order total in currency units (Flink decimal.handling.mode=double).
+            tests:
+              - dbt_expectations.expect_column_values_to_be_between:
+                  min_value: 0
+          - name: created_at
+            description: Order placement time (UTC).
+          - name: updated_at
+            description: ReplacingMergeTree version column; highest wins at merge.
+          - name: is_deleted
+            description: CDC tombstone flag; 1 when order removed in Postgres.
+
+      - name: products_current
+        description: >
+          Catalog and live inventory per product_id. Use FINAL on reads when
+          correctness matters during high-TPS flash sale (see schema.sql).
+        columns:
+          - name: product_id
+            description: Primary business key; ORDER BY key in ReplacingMergeTree.
+          - name: sku
+            description: Stock keeping unit identifier.
+          - name: name
+            description: Product display name.
+          - name: category
+            description: Product category for reporting slices.
+          - name: price
+            description: Unit price in currency units.
+          - name: inventory_count
+            description: Live stock level; decremented by CDC during flash sale.
+            tests:
+              - dbt_expectations.expect_column_values_to_be_greater_than_or_equal:
+                  min_value: 0
+          - name: updated_at
+            description: ReplacingMergeTree version column; highest wins at merge.
+          - name: is_deleted
+            description: CDC tombstone flag; 1 when product removed in Postgres.
