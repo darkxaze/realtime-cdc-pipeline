@@ -1,0 +1,42 @@
+version: 2
+
+models:
+  - name: fct_order_performance
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_tier
+        tests:
+          - accepted_values:
+              values: ['standard', 'premium', 'vip']
+              config:
+                severity: warn
+      - name: seconds_to_confirm
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 3600
+              config:
+                severity: warn
+      - name: order_context
+        tests:
+          - accepted_values:
+              values: ['flash_sale', 'normal']
+
+  - name: mart_flash_sale_analysis
+    columns:
+      - name: slowdown_factor
+        tests:
+          # slowdown factor below 1 means flash sale was faster than normal which is
+          # impossible — indicates a data pipeline bug
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 1
+              max_value: 20
+      - name: flash_sale_avg_confirm_seconds
+        tests:
+          - not_null
+      - name: normal_avg_confirm_seconds
+        tests:
+          - not_null
