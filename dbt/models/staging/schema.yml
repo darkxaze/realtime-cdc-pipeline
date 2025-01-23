@@ -1,0 +1,61 @@
+version: 2
+
+models:
+  - name: stg_orders
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_id
+        tests:
+          - not_null
+          # Catches orphaned orders where customer was deleted without going through the CDC delete path.
+          - relationships:
+              to: source('default', 'customers_current')
+              field: customer_id
+      - name: status
+        tests:
+          - accepted_values:
+              values: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled']
+      - name: total_amount
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 100000
+      - name: is_flash_sale_order
+        tests:
+          - accepted_values:
+              values: [0, 1]
+      - name: seconds_in_current_status
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 86400
+              config:
+                severity: warn
+
+  - name: stg_products
+    columns:
+      - name: product_id
+        tests:
+          - not_null
+          - unique
+      - name: sku
+        tests:
+          - not_null
+          - unique
+      - name: inventory_count
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 10000
+      - name: stock_status
+        tests:
+          - accepted_values:
+              values: ['out_of_stock', 'low_stock', 'in_stock']
+      - name: price
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 10000
