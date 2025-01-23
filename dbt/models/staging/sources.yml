@@ -9,6 +9,13 @@ sources:
         description: >
           Latest order header per order_id. Multiple physical versions per order_id
           exist until background merge; staging uses FINAL for query-time deduplication.
+        # warn threshold means pipeline is slow but not broken
+        # error threshold means pipeline has likely stalled
+        # these thresholds are appropriate for a 10 TPS normal load pipeline
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 30, period: minute}
+          loaded_at_field: updated_at
         columns:
           - name: order_id
             description: Primary business key; ORDER BY key in ReplacingMergeTree.
@@ -37,6 +44,13 @@ sources:
         description: >
           Catalog and live inventory per product_id. Use FINAL on reads when
           correctness matters during high-TPS flash sale (see schema.sql).
+        # warn threshold means pipeline is slow but not broken
+        # error threshold means pipeline has likely stalled
+        # these thresholds are appropriate for a 10 TPS normal load pipeline
+        freshness:
+          warn_after: {count: 10, period: minute}
+          error_after: {count: 60, period: minute}
+          loaded_at_field: updated_at
         columns:
           - name: product_id
             description: Primary business key; ORDER BY key in ReplacingMergeTree.
@@ -57,3 +71,9 @@ sources:
             description: ReplacingMergeTree version column; highest wins at merge.
           - name: is_deleted
             description: CDC tombstone flag; 1 when product removed in Postgres.
+
+      - name: customers_current
+        description: Customer dimension from CDC sink (required by staging relationship tests and gold joins).
+        columns:
+          - name: customer_id
+            description: Primary business key; join target for stg_orders.
