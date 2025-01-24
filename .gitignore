@@ -10,10 +10,14 @@ venv/
 *.log
 dbt/target/
 dbt/logs/
+dbt/.user.yml
+dbt/dbt_packages/
+dbt/package-lock.yml
 .terraform/
 *.tfstate
 *.tfstate.backup
 benchmarks/*.json
+Scraps/
 
 # AI tools
 .cursor/

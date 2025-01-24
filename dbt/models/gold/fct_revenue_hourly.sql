@@ -5,13 +5,25 @@
   )
 }}
 
-select
-    toStartOfHour(window_start) as hour,
-    sum(orders_count) as orders_count,
-    sum(revenue) as revenue,
-    avg(avg_order_value) as avg_order_value,
-    sum(cancellations_count) as cancellations_count,
-    sum(cancellations_count) / sum(orders_count) as cancellation_rate
-from {{ source('default', 'order_metrics_per_minute') }}
-group by toStartOfHour(window_start)
-order by hour
+-- Pre-aggregated per-minute rows rolled up to hourly grain.
+-- avg_order_value and cancellation_rate computed in outer query
+-- to avoid ClickHouse 23.11 ILLEGAL_AGGREGATION error when
+-- division expressions reference aggregate aliases in same SELECT.
+
+SELECT
+  hour,
+  orders_count,
+  revenue,
+  revenue / nullIf(orders_count, 0)              AS avg_order_value,
+  cancellations_count,
+  cancellations_count / nullIf(orders_count, 0)  AS cancellation_rate
+FROM (
+  SELECT
+    toStartOfHour(window_start)    AS hour,
+    sum(orders_count)              AS orders_count,
+    sum(revenue)                   AS revenue,
+    sum(cancellations_count)       AS cancellations_count
+  FROM {{ source('default', 'order_metrics_per_minute') }}
+  GROUP BY toStartOfHour(window_start)
+  ORDER BY toStartOfHour(window_start)
+)

@@ -12,25 +12,25 @@ sources:
         # warn threshold means pipeline is slow but not broken
         # error threshold means pipeline has likely stalled
         # these thresholds are appropriate for a 10 TPS normal load pipeline
+        loaded_at_field: updated_at
         freshness:
           warn_after: {count: 5, period: minute}
           error_after: {count: 30, period: minute}
-          loaded_at_field: updated_at
         columns:
           - name: order_id
             description: Primary business key; ORDER BY key in ReplacingMergeTree.
-            tests:
+            data_tests:
               - not_null
           - name: customer_id
             description: FK to customers_current.
           - name: status
             description: Order lifecycle state from Postgres CDC.
-            tests:
+            data_tests:
               - accepted_values:
                   values: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled']
           - name: total_amount
             description: Order total in currency units (Flink decimal.handling.mode=double).
-            tests:
+            data_tests:
               - dbt_expectations.expect_column_values_to_be_between:
                   min_value: 0
           - name: created_at
@@ -47,10 +47,10 @@ sources:
         # warn threshold means pipeline is slow but not broken
         # error threshold means pipeline has likely stalled
         # these thresholds are appropriate for a 10 TPS normal load pipeline
+        loaded_at_field: updated_at
         freshness:
           warn_after: {count: 10, period: minute}
           error_after: {count: 60, period: minute}
-          loaded_at_field: updated_at
         columns:
           - name: product_id
             description: Primary business key; ORDER BY key in ReplacingMergeTree.
@@ -64,13 +64,18 @@ sources:
             description: Unit price in currency units.
           - name: inventory_count
             description: Live stock level; decremented by CDC during flash sale.
-            tests:
-              - dbt_expectations.expect_column_values_to_be_greater_than_or_equal:
+            data_tests:
+              - dbt_expectations.expect_column_values_to_be_between:
                   min_value: 0
           - name: updated_at
             description: ReplacingMergeTree version column; highest wins at merge.
           - name: is_deleted
             description: CDC tombstone flag; 1 when product removed in Postgres.
+
+      - name: order_metrics_per_minute
+        description: >
+          Per-minute aggregated order metrics written by Flink
+          order_metrics job. Append-only MergeTree table.
 
       - name: customers_current
         description: Customer dimension from CDC sink (required by staging relationship tests and gold joins).
