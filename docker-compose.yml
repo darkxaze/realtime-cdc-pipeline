@@ -232,10 +232,115 @@ services:
       clickhouse:
         condition: service_healthy
 
+  airflow-init:
+    image: apache/airflow:2.9.3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      # _PIP_ADDITIONAL_REQUIREMENTS installs extra Python packages into
+      # the Airflow container on startup. Used here to install dbt so
+      # Airflow tasks can run dbt commands without a custom Docker image.
+      _PIP_ADDITIONAL_REQUIREMENTS: "dbt-core==1.8.0 dbt-clickhouse==1.8.0"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./dbt:/opt/airflow/dbt
+      - airflow_logs:/opt/airflow/logs
+    command: >
+      bash -c "airflow db init && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@example.com"
+    networks:
+      - default
+    profiles:
+      - airflow
+
+  airflow-scheduler:
+    image: apache/airflow:2.9.3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      # _PIP_ADDITIONAL_REQUIREMENTS installs extra Python packages into
+      # the Airflow container on startup. Used here to install dbt so
+      # Airflow tasks can run dbt commands without a custom Docker image.
+      _PIP_ADDITIONAL_REQUIREMENTS: "dbt-core==1.8.0 dbt-clickhouse==1.8.0"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./dbt:/opt/airflow/dbt
+      - ./great_expectations:/opt/airflow/great_expectations
+      - ./analysis:/opt/airflow/analysis
+      - airflow_logs:/opt/airflow/logs
+    command: scheduler
+    networks:
+      - default
+    profiles:
+      - airflow
+
+  airflow-webserver:
+    image: apache/airflow:2.9.3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      DBT_PROFILES_DIR: /opt/airflow/dbt
+      # _PIP_ADDITIONAL_REQUIREMENTS installs extra Python packages into
+      # the Airflow container on startup. Used here to install dbt so
+      # Airflow tasks can run dbt commands without a custom Docker image.
+      _PIP_ADDITIONAL_REQUIREMENTS: "dbt-core==1.8.0 dbt-clickhouse==1.8.0"
+      CLICKHOUSE_HOST: clickhouse
+      CLICKHOUSE_PORT: "8123"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ecommerce
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./dbt:/opt/airflow/dbt
+      - ./great_expectations:/opt/airflow/great_expectations
+      - ./analysis:/opt/airflow/analysis
+      - airflow_logs:/opt/airflow/logs
+    ports:
+      - "8085:8080"
+    command: webserver
+    networks:
+      - default
+    profiles:
+      - airflow
+
 volumes:
   postgres_data:
   clickhouse_data:
   flink_checkpoints:
+  airflow_logs:
 
 # Explicit name only; let Docker manage addressing to avoid config drift.
 networks:

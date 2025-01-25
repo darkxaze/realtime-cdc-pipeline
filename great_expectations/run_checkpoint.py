@@ -59,9 +59,12 @@ def connect_postgres() -> PgConnection:
 
 
 def connect_clickhouse() -> ClickHouseClient:
+    # Port 9000 is the native TCP port inside Docker.
+    # Port 19000 is only mapped to the host machine (see docker-compose.yml).
+    # Airflow runs inside Docker so must use the internal port 9000.
     return ClickHouseClient(
         host=_env("CLICKHOUSE_HOST", "localhost"),
-        port=int(_env("CLICKHOUSE_NATIVE_PORT", "19000")),
+        port=int(_env("CLICKHOUSE_NATIVE_PORT", "9000")),
         user=_env("CLICKHOUSE_USER", "default"),
         password=_env("CLICKHOUSE_PASSWORD", ""),
         database=_env("CLICKHOUSE_DB", "default"),
