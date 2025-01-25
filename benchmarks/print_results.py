@@ -12,8 +12,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from dotenv import load_dotenv
-
 logger = logging.getLogger(__name__)
 
 BENCHMARKS_DIR = Path(__file__).resolve().parent
@@ -97,7 +95,6 @@ def print_summary() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    load_dotenv()
     print_summary()
 
 

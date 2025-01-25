@@ -8,6 +8,7 @@ tables populated by the real pipeline. They are not fabricated.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sys
 from dataclasses import dataclass
@@ -51,9 +52,12 @@ def _env(name: str, default: str) -> str:
 
 
 def connect_clickhouse() -> ClickHouseClient:
+    # Port 9000 is the native TCP port inside Docker.
+    # Port 19000 is only mapped to the host machine.
+    # Airflow runs this script inside Docker so must use port 9000.
     return ClickHouseClient(
         host=_env("CLICKHOUSE_HOST", "localhost"),
-        port=int(_env("CLICKHOUSE_NATIVE_PORT", "19000")),
+        port=int(_env("CLICKHOUSE_NATIVE_PORT", "9000")),
         user=_env("CLICKHOUSE_USER", "default"),
         password=_env("CLICKHOUSE_PASSWORD", ""),
         database=_env("CLICKHOUSE_DB", "default"),
@@ -69,7 +73,7 @@ def fetch_flash_sale_metrics(client: ClickHouseClient) -> FlashSaleMetrics:
         )
 
     row = rows[0]
-    return FlashSaleMetrics(
+    metrics = FlashSaleMetrics(
         flash_sale_avg_confirm_seconds=float(row[0]),
         normal_avg_confirm_seconds=float(row[1]),
         slowdown_factor=float(row[2]),
@@ -80,6 +84,14 @@ def fetch_flash_sale_metrics(client: ClickHouseClient) -> FlashSaleMetrics:
         flash_sale_cancel_rate=float(row[7]),
         products_sold_out=int(row[8]),
     )
+    for field_name, value in vars(metrics).items():
+        if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
+            raise RuntimeError(
+                f"Field {field_name} is {value} — likely caused by "
+                "division by zero in mart_flash_sale_analysis. "
+                "Check G6/G7 fixes in fct_order_performance."
+            )
+    return metrics
 
 
 def print_report(metrics: FlashSaleMetrics) -> None:
@@ -99,24 +111,24 @@ def print_report(metrics: FlashSaleMetrics) -> None:
     logger.info("========================================")
     logger.info("")
     logger.info("Order Confirmation Latency")
-    logger.info(f"  Normal traffic:        {normal_avg:.1f} seconds")
-    logger.info(f"  Flash sale:            {flash_avg:.1f} seconds")
-    logger.info(f"  Slowdown factor:       {slowdown:.1f}x slower")
+    logger.info("  Normal traffic:        %.1f seconds", normal_avg)
+    logger.info("  Flash sale:            %.1f seconds", flash_avg)
+    logger.info("  Slowdown factor:       %.1fx slower", slowdown)
     logger.info("")
-    logger.info(f"  Finding: Order confirmation is {slowdown:.1f}x slower during")
+    logger.info("  Finding: Order confirmation is %.1fx slower during", slowdown)
     logger.info("  flash sale — a bottleneck invisible to batch analytics.")
     logger.info("  This metric exists because CDC captures every status transition.")
     logger.info("")
     logger.info("Revenue")
-    logger.info(f"  Flash sale window:    £{flash_revenue:,.2f}")
-    logger.info(f"  Normal same duration: £{normal_revenue:,.2f}")
-    logger.info(f"  Multiplier:           {revenue_mult:.1f}x")
+    logger.info("  Flash sale window:    £%s", f"{flash_revenue:,.2f}")
+    logger.info("  Normal same duration: £%s", f"{normal_revenue:,.2f}")
+    logger.info("  Multiplier:           %.1fx", revenue_mult)
     logger.info("")
     logger.info("Cancellations")
-    logger.info(f"  Normal rate:          {normal_cancel:.1%}")
-    logger.info(f"  Flash sale rate:      {flash_cancel:.1%}")
+    logger.info("  Normal rate:          %.1f%%", normal_cancel * 100)
+    logger.info("  Flash sale rate:      %.1f%%", flash_cancel * 100)
     logger.info("")
-    logger.info(f"Products sold out:      {sold_out}")
+    logger.info("Products sold out:      %s", sold_out)
     logger.info("")
     logger.info("========================================")
     logger.info("Reproduce: python analysis/flash_sale_analysis.py")

@@ -1,9 +1,18 @@
+-- post_hook removes tombstoned orders after each incremental run.
+-- Without this, orders deleted in Postgres accumulate forever
+-- because is_deleted=1 rows are filtered before the incremental
+-- watermark check, so dbt never generates a delete for them.
 {{
   config(
     materialized='incremental',
     unique_key='order_id',
     incremental_strategy='delete+insert',
-    on_schema_change='fail'
+    on_schema_change='fail',
+    post_hook="DELETE FROM {{ this }} WHERE order_id IN (
+      SELECT DISTINCT order_id
+      FROM {{ source('default', 'orders_current') }} FINAL
+      WHERE is_deleted = 1
+    )"
   )
 }}
 
@@ -33,9 +42,12 @@ select
     total_amount,
     created_at,
     updated_at,
+    -- Default values set to far future so is_flash_sale_order is
+    -- always 0 when vars are not explicitly provided.
+    -- Override with --vars during flash sale load generator run.
     case
-        when created_at >= '{{ var("flash_sale_start") }}'
-            and created_at <= '{{ var("flash_sale_end") }}'
+        when created_at >= '{{ var("flash_sale_start", "2099-01-01 00:00:00") }}'
+            and created_at <= '{{ var("flash_sale_end", "2099-01-01 00:00:00") }}'
         then 1
         else 0
     end as is_flash_sale_order,

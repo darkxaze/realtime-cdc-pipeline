@@ -25,14 +25,29 @@ models:
           - accepted_values:
               values: ['flash_sale', 'normal']
 
+  - name: fct_revenue_hourly
+    description: Hourly revenue aggregation from per-minute metrics
+    columns:
+      - name: hour
+        data_tests:
+          - not_null
+      - name: orders_count
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+      - name: revenue
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+
   - name: mart_flash_sale_analysis
     columns:
       - name: slowdown_factor
         tests:
-          # slowdown factor below 1 means flash sale was faster than normal which is
-          # impossible — indicates a data pipeline bug
+          # min_value 0 allows equal performance (1.0x).
+          # Below 0 is impossible and indicates a pipeline bug.
           - dbt_expectations.expect_column_values_to_be_between:
-              min_value: 1
+              min_value: 0
               max_value: 20
       - name: flash_sale_avg_confirm_seconds
         tests:

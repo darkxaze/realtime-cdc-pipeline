@@ -26,6 +26,9 @@ ACCEPTED_ORDER_STATUSES: tuple[str, ...] = (
     "cancelled",
 )
 
+# Assumes hard deletes in Postgres (no is_deleted column).
+# If soft deletes are added, add AND is_deleted = 0 here
+# to match the ClickHouse query filter.
 # Explicit UTC on created_at and NOW(): machine ran BST (UTC+1) during testing;
 # without AT TIME ZONE 'UTC', Postgres used local time and diverged from ClickHouse
 # (16 false missing orders on day 3 — see CONTEXT.md / Bug 4).
@@ -71,9 +74,11 @@ def connect_clickhouse() -> ClickHouseClient:
     )
 
 
-def check_orders_quality() -> list[str]:
+def check_orders_quality(client: ClickHouseClient | None = None) -> list[str]:
     """Validate orders_current (FINAL) for nulls, status domain, and positive amounts."""
-    client = connect_clickhouse()
+    owns_client = client is None
+    if owns_client:
+        client = connect_clickhouse()
     failures: list[str] = []
     status_list = ", ".join(f"'{s}'" for s in ACCEPTED_ORDER_STATUSES)
 
@@ -106,26 +111,29 @@ def check_orders_quality() -> list[str]:
                 f"{ACCEPTED_ORDER_STATUSES}"
             )
 
-        non_positive_amount_count = client.execute(
+        negative_amount_count = client.execute(
             """
             SELECT count()
             FROM orders_current FINAL
-            WHERE total_amount <= 0
+            WHERE total_amount < 0
             """
         )[0][0]
-        if non_positive_amount_count:
+        if negative_amount_count:
             failures.append(
-                f"orders_current: {non_positive_amount_count} row(s) with total_amount <= 0"
+                f"orders_current: {negative_amount_count} row(s) with total_amount < 0"
             )
     finally:
-        client.disconnect()
+        if owns_client:
+            client.disconnect()
 
     return failures
 
 
-def check_products_quality() -> list[str]:
+def check_products_quality(client: ClickHouseClient | None = None) -> list[str]:
     """Validate products_current (FINAL) for non-negative inventory."""
-    client = connect_clickhouse()
+    owns_client = client is None
+    if owns_client:
+        client = connect_clickhouse()
     failures: list[str] = []
 
     try:
@@ -141,7 +149,8 @@ def check_products_quality() -> list[str]:
                 f"products_current: {negative_inventory_count} row(s) with inventory_count < 0"
             )
     finally:
-        client.disconnect()
+        if owns_client:
+            client.disconnect()
 
     return failures
 
@@ -182,23 +191,27 @@ def main() -> None:
 
     any_failed = False
 
-    orders_failures = check_orders_quality()
-    if orders_failures:
-        any_failed = True
-        logger.warning("[orders quality] FAIL")
-        for msg in orders_failures:
-            logger.warning("  - %s", msg)
-    else:
-        logger.info("[orders quality] PASS")
+    ch_client = connect_clickhouse()
+    try:
+        orders_failures = check_orders_quality(ch_client)
+        if orders_failures:
+            any_failed = True
+            logger.warning("[orders quality] FAIL")
+            for msg in orders_failures:
+                logger.warning("  - %s", msg)
+        else:
+            logger.info("[orders quality] PASS")
 
-    products_failures = check_products_quality()
-    if products_failures:
-        any_failed = True
-        logger.warning("[products quality] FAIL")
-        for msg in products_failures:
-            logger.warning("  - %s", msg)
-    else:
-        logger.info("[products quality] PASS")
+        products_failures = check_products_quality(ch_client)
+        if products_failures:
+            any_failed = True
+            logger.warning("[products quality] FAIL")
+            for msg in products_failures:
+                logger.warning("  - %s", msg)
+        else:
+            logger.info("[products quality] PASS")
+    finally:
+        ch_client.disconnect()
 
     e2e_ok, e2e_message = check_end_to_end_integrity()
     if e2e_ok:

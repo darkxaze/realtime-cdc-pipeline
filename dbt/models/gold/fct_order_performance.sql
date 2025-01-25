@@ -11,26 +11,32 @@
   This model measures time-in-status which batch analytics cannot produce.
 */
 
-select
+-- FINAL is applied inside a subquery because ClickHouse does not
+-- support FINAL on JOIN clauses, only on the main FROM table.
+-- The subquery deduplicates customer rows at query time.
+
+SELECT
     o.order_id,
     o.customer_id,
-    c.tier as customer_tier,
+    c.tier AS customer_tier,
     o.total_amount,
-    o.status as current_status,
+    o.status AS current_status,
     o.created_at,
     o.updated_at,
     o.is_flash_sale_order,
     o.seconds_in_current_status,
-    case
-        when o.status = 'confirmed'
-        then o.seconds_in_current_status
-        else null
-    end as seconds_to_confirm,
-    case
-        when o.is_flash_sale_order = 1 then 'flash_sale'
-        else 'normal'
-    end as order_context
-from {{ ref('stg_orders') }} o
-left join {{ source('default', 'customers_current') }} c
-    on o.customer_id = c.customer_id
-    and c.is_deleted = 0
+    CASE
+        WHEN o.status = 'confirmed'
+        THEN o.seconds_in_current_status
+        ELSE NULL
+    END AS seconds_to_confirm,
+    CASE
+        WHEN o.is_flash_sale_order = 1 THEN 'flash_sale'
+        ELSE 'normal'
+    END AS order_context
+FROM {{ ref('stg_orders') }} o
+LEFT JOIN (
+    SELECT customer_id, tier
+    FROM {{ source('default', 'customers_current') }} FINAL
+    WHERE is_deleted = 0
+) c ON o.customer_id = c.customer_id

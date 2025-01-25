@@ -9,6 +9,8 @@
 -- avg_order_value and cancellation_rate computed in outer query
 -- to avoid ClickHouse 23.11 ILLEGAL_AGGREGATION error when
 -- division expressions reference aggregate aliases in same SELECT.
+-- ORDER BY is in the outer SELECT not the subquery.
+-- ClickHouse is free to discard ORDER BY inside subqueries.
 
 SELECT
   hour,
@@ -25,5 +27,5 @@ FROM (
     sum(cancellations_count)       AS cancellations_count
   FROM {{ source('default', 'order_metrics_per_minute') }}
   GROUP BY toStartOfHour(window_start)
-  ORDER BY toStartOfHour(window_start)
 )
+ORDER BY hour

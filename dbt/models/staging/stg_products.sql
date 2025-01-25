@@ -1,9 +1,18 @@
+-- post_hook removes tombstoned products after each incremental run.
+-- Without this, products deleted in Postgres accumulate forever
+-- because is_deleted=1 rows are filtered before the incremental
+-- watermark check, so dbt never generates a delete for them.
 {{
   config(
     materialized='incremental',
     unique_key='product_id',
     incremental_strategy='delete+insert',
-    on_schema_change='fail'
+    on_schema_change='fail',
+    post_hook="DELETE FROM {{ this }} WHERE product_id IN (
+      SELECT DISTINCT product_id
+      FROM {{ source('default', 'products_current') }} FINAL
+      WHERE is_deleted = 1
+    )"
   )
 }}
 

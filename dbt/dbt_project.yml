@@ -16,6 +16,10 @@ models:
       schema: gold
 vars:
   # update these vars to match your actual flash sale test times
-  flash_sale_start: '2025-01-25 14:00:00'
-  flash_sale_end: '2025-01-25 14:05:00'
+  flash_sale_start: '2099-01-01 00:00:00'
+  flash_sale_end: '2099-01-01 00:00:00'
   low_stock_threshold: 10
+  max_order_amount: 100000
+  max_status_seconds: 86400
+  max_inventory: 10000
+  max_price: 10000
