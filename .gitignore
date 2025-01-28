@@ -18,6 +18,7 @@ dbt/package-lock.yml
 *.tfstate.backup
 benchmarks/*.json
 Scraps/
+actual_build.md
 
 # AI tools
 .cursor/
