@@ -323,6 +323,12 @@ fi
 # The fix is to insert one row into orders and order_items during seed (or wait
 # here and let normal load generator trigger the missing topics). We wait here
 # because modifying seed behaviour would change Stage 1 behaviour.
+#
+# Kafka topic state is stored in the Kafka data volume which is not preserved
+# between restarts (only postgres_data and clickhouse_data volumes persist). CDC
+# topics must be recreated by triggering row changes in Postgres on every restart,
+# even on --no-seed runs. These trigger inserts add a small number of extra orders
+# to ClickHouse but do not affect the analytical results meaningfully.
 CDC_TOPICS=(
   "ecommerce.public.orders"
   "ecommerce.public.customers"
@@ -330,17 +336,9 @@ CDC_TOPICS=(
   "ecommerce.public.order_items"
 )
 
-section "Waiting for Debezium CDC topics"
-
-printf "  Waiting for CDC topics..."
-CDC_TOPIC_TIMEOUT=120
-cdc_elapsed=0
-cdc_topics_ready=false
-
-while [[ $cdc_elapsed -lt $CDC_TOPIC_TIMEOUT ]]; do
+_check_cdc_topics() {
   cdc_topic_list=$(docker compose exec -T kafka \
     kafka-topics --bootstrap-server localhost:9092 --list 2>/dev/null || true)
-
   cdc_missing=()
   cdc_existing=()
   for topic in "${CDC_TOPICS[@]}"; do
@@ -350,22 +348,68 @@ while [[ $cdc_elapsed -lt $CDC_TOPIC_TIMEOUT ]]; do
       cdc_missing+=("$topic")
     fi
   done
+}
 
-  if [[ ${#cdc_missing[@]} -eq 0 ]]; then
-    cdc_topics_ready=true
-    echo " ✓"
-    log "All four Debezium CDC topics exist."
-    break
-  fi
+_run_resume_trigger_inserts() {
+  log "CDC topics missing on resume — running minimal trigger inserts to recreate them..."
+  docker compose exec -T postgres \
+    psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-ecommerce}" \
+    -c "INSERT INTO orders (customer_id, status, total_amount) SELECT customer_id, 'pending', 99.99 FROM customers LIMIT 1;"
 
-  printf "."
-  sleep 3
-  cdc_elapsed=$((cdc_elapsed + 3))
-done
+  docker compose exec -T postgres \
+    psql -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-ecommerce}" \
+    -c "INSERT INTO order_items (order_id, product_id, quantity, unit_price)
+        SELECT o.order_id, p.product_id, 1, p.price
+        FROM orders o CROSS JOIN products p
+        WHERE o.status = 'pending'
+        LIMIT 1;"
+}
 
-if [[ "$cdc_topics_ready" != true ]]; then
+_wait_for_cdc_topics() {
+  local timeout="$1"
+  local elapsed=0
+  cdc_topics_ready=false
+
+  printf "  Waiting for CDC topics..."
+  while [[ $elapsed -lt $timeout ]]; do
+    _check_cdc_topics
+
+    if [[ ${#cdc_missing[@]} -eq 0 ]]; then
+      cdc_topics_ready=true
+      echo " ✓"
+      log "All four Debezium CDC topics exist."
+      return 0
+    fi
+
+    printf "."
+    sleep 3
+    elapsed=$((elapsed + 3))
+  done
+
   echo ""
-  echo -e "${RED}[start]${NC} Timed out after ${CDC_TOPIC_TIMEOUT}s waiting for Debezium CDC topics."
+  return 1
+}
+
+section "Waiting for Debezium CDC topics"
+
+_check_cdc_topics
+if [[ "$SEED" == false ]] && [[ ${#cdc_missing[@]} -gt 0 ]]; then
+  _run_resume_trigger_inserts
+fi
+
+if ! _wait_for_cdc_topics 120; then
+  if [[ "$SEED" == false ]]; then
+    _check_cdc_topics
+    if [[ ${#cdc_missing[@]} -gt 0 ]]; then
+      _run_resume_trigger_inserts
+      _wait_for_cdc_topics 60 || true
+    fi
+  fi
+fi
+
+if [[ "${cdc_topics_ready:-false}" != true ]]; then
+  _check_cdc_topics
+  echo -e "${RED}[start]${NC} Timed out waiting for Debezium CDC topics."
   if [[ ${#cdc_existing[@]} -gt 0 ]]; then
     echo -e "${RED}[start]${NC} Topics present: ${cdc_existing[*]}"
   else
