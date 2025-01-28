@@ -1,12 +1,12 @@
 """
 CDC materialisation: Debezium CDC topics → materialized Kafka topics → ClickHouse Kafka Engine.
 
-Why raw format, not debezium-json:
-  Debezium + JsonConverter can emit a Connect envelope with an outer schema wrapper.
-  Flink's debezium-json deserializer fails on that layout. Raw reads the full value as STRING.
+Why json format with envelope columns, not raw:
+  raw format in Flink 1.18 delivers bytes not STRING, causing JSON_VALUE to return null
+  for every path. json format with named columns matching the Debezium envelope fixes this.
 
-Why JSON_VALUE:
-  Manual extraction from JSON paths after parse. COALESCE(after, before) for upserts/deletes.
+Why JSON_VALUE on after_data/before_data:
+  Manual field extraction from the row object JSON. COALESCE(after, before) for upserts/deletes.
 
 Why Kafka intermediary sink:
   Decouples Flink from ClickHouse; ClickHouse Kafka Engine ingests with strong consistency/recovery.
@@ -50,11 +50,13 @@ def _sanitize_table_name(topic: str) -> str:
 
 
 def create_kafka_source_raw(table_env: StreamTableEnvironment, topic: str) -> str:
-    """Raw Kafka source — entire message as STRING for JSON_VALUE extraction."""
+    """Kafka source — Debezium envelope columns for JSON_VALUE field extraction."""
     table_name = _sanitize_table_name(topic)
     group_id = f"cdc-materialisation-{topic}"
 
-    # Raw format: Debezium JSON may include schema wrapper debezium-json cannot parse.
+    # raw format in Flink 1.18 delivers bytes not STRING, causing JSON_VALUE to return null
+    # for every path. Switching to json format with named columns that match the Debezium
+    # envelope structure fixes this cleanly.
     # Reverted to latest-offset after backfill completed.
     # earliest-offset was used temporarily to replay 117 missing
     # customers when customers_materialized topic was absent on
@@ -62,18 +64,25 @@ def create_kafka_source_raw(table_env: StreamTableEnvironment, topic: str) -> st
     # to avoid reprocessing all historical data on every restart.
     ddl = f"""
     CREATE TABLE {table_name} (
-        payload STRING
+        `before` STRING,
+        `after` STRING,
+        op STRING,
+        ts_ms BIGINT,
+        before_data AS `before`,
+        after_data AS `after`
     ) WITH (
         'connector' = 'kafka',
         'topic' = '{topic}',
         'properties.bootstrap.servers' = '{_kafka_bootstrap()}',
         'properties.group.id' = '{group_id}',
         'scan.startup.mode' = 'latest-offset',
-        'format' = 'raw'
+        'format' = 'json',
+        'json.fail-on-missing-field' = 'false',
+        'json.ignore-parse-errors' = 'true'
     )
     """
     table_env.execute_sql(ddl)
-    logger.info("Registered raw Kafka source: %s -> %s", topic, table_name)
+    logger.info("Registered Kafka source: %s -> %s", topic, table_name)
     return table_name
 
 
@@ -151,53 +160,32 @@ def process_orders_cdc(table_env: StreamTableEnvironment, dlq_table: str) -> lis
     INSERT INTO {sink}
     SELECT
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.order_id'),
-            JSON_VALUE(payload, '$.payload.before.order_id'),
-            JSON_VALUE(payload, '$.after.order_id'),
-            JSON_VALUE(payload, '$.before.order_id')
+            JSON_VALUE(after_data, '$.order_id'),
+            JSON_VALUE(before_data, '$.order_id')
         ) AS order_id,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.customer_id'),
-            JSON_VALUE(payload, '$.payload.before.customer_id'),
-            JSON_VALUE(payload, '$.after.customer_id'),
-            JSON_VALUE(payload, '$.before.customer_id')
+            JSON_VALUE(after_data, '$.customer_id'),
+            JSON_VALUE(before_data, '$.customer_id')
         ) AS customer_id,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.status'),
-            JSON_VALUE(payload, '$.payload.before.status'),
-            JSON_VALUE(payload, '$.after.status'),
-            JSON_VALUE(payload, '$.before.status')
+            JSON_VALUE(after_data, '$.status'),
+            JSON_VALUE(before_data, '$.status')
         ) AS status,
         CAST(COALESCE(
-            JSON_VALUE(payload, '$.payload.after.total_amount'),
-            JSON_VALUE(payload, '$.payload.before.total_amount'),
-            JSON_VALUE(payload, '$.after.total_amount'),
-            JSON_VALUE(payload, '$.before.total_amount')
+            JSON_VALUE(after_data, '$.total_amount'),
+            JSON_VALUE(before_data, '$.total_amount')
         ) AS DOUBLE) AS total_amount,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.created_at'),
-            JSON_VALUE(payload, '$.payload.before.created_at'),
-            JSON_VALUE(payload, '$.after.created_at'),
-            JSON_VALUE(payload, '$.before.created_at')
+            JSON_VALUE(after_data, '$.created_at'),
+            JSON_VALUE(before_data, '$.created_at')
         ) AS created_at,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.updated_at'),
-            JSON_VALUE(payload, '$.payload.before.updated_at'),
-            JSON_VALUE(payload, '$.after.updated_at'),
-            JSON_VALUE(payload, '$.before.updated_at')
+            JSON_VALUE(after_data, '$.updated_at'),
+            JSON_VALUE(before_data, '$.updated_at')
         ) AS updated_at,
-        CASE
-            WHEN COALESCE(
-                JSON_VALUE(payload, '$.payload.op'),
-                JSON_VALUE(payload, '$.op')
-            ) = 'd' THEN 1
-            ELSE 0
-        END AS is_deleted
+        CASE WHEN op = 'd' THEN 1 ELSE 0 END AS is_deleted
     FROM {source}
-    WHERE COALESCE(
-        JSON_VALUE(payload, '$.payload.op'),
-        JSON_VALUE(payload, '$.op')
-    ) IN ('c', 'u', 'd', 'r')
+    WHERE op IN ('c', 'u', 'd', 'r')
     """
     return [insert_sql]
 
@@ -216,65 +204,40 @@ def process_products_cdc(table_env: StreamTableEnvironment, dlq_table: str) -> l
     INSERT INTO {sink}
     SELECT
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.product_id'),
-            JSON_VALUE(payload, '$.payload.before.product_id'),
-            JSON_VALUE(payload, '$.after.product_id'),
-            JSON_VALUE(payload, '$.before.product_id')
+            JSON_VALUE(after_data, '$.product_id'),
+            JSON_VALUE(before_data, '$.product_id')
         ) AS product_id,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.sku'),
-            JSON_VALUE(payload, '$.payload.before.sku'),
-            JSON_VALUE(payload, '$.after.sku'),
-            JSON_VALUE(payload, '$.before.sku')
+            JSON_VALUE(after_data, '$.sku'),
+            JSON_VALUE(before_data, '$.sku')
         ) AS sku,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.name'),
-            JSON_VALUE(payload, '$.payload.before.name'),
-            JSON_VALUE(payload, '$.after.name'),
-            JSON_VALUE(payload, '$.before.name')
+            JSON_VALUE(after_data, '$.name'),
+            JSON_VALUE(before_data, '$.name')
         ) AS name,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.category'),
-            JSON_VALUE(payload, '$.payload.before.category'),
-            JSON_VALUE(payload, '$.after.category'),
-            JSON_VALUE(payload, '$.before.category')
+            JSON_VALUE(after_data, '$.category'),
+            JSON_VALUE(before_data, '$.category')
         ) AS category,
         CAST(COALESCE(
-            JSON_VALUE(payload, '$.payload.after.price'),
-            JSON_VALUE(payload, '$.payload.before.price'),
-            JSON_VALUE(payload, '$.after.price'),
-            JSON_VALUE(payload, '$.before.price')
+            JSON_VALUE(after_data, '$.price'),
+            JSON_VALUE(before_data, '$.price')
         ) AS DOUBLE) AS price,
         CAST(COALESCE(
-            JSON_VALUE(payload, '$.payload.after.inventory_count'),
-            JSON_VALUE(payload, '$.payload.before.inventory_count'),
-            JSON_VALUE(payload, '$.after.inventory_count'),
-            JSON_VALUE(payload, '$.before.inventory_count')
+            JSON_VALUE(after_data, '$.inventory_count'),
+            JSON_VALUE(before_data, '$.inventory_count')
         ) AS INT) AS inventory_count,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.created_at'),
-            JSON_VALUE(payload, '$.payload.before.created_at'),
-            JSON_VALUE(payload, '$.after.created_at'),
-            JSON_VALUE(payload, '$.before.created_at')
+            JSON_VALUE(after_data, '$.created_at'),
+            JSON_VALUE(before_data, '$.created_at')
         ) AS created_at,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.updated_at'),
-            JSON_VALUE(payload, '$.payload.before.updated_at'),
-            JSON_VALUE(payload, '$.after.updated_at'),
-            JSON_VALUE(payload, '$.before.updated_at')
+            JSON_VALUE(after_data, '$.updated_at'),
+            JSON_VALUE(before_data, '$.updated_at')
         ) AS updated_at,
-        CASE
-            WHEN COALESCE(
-                JSON_VALUE(payload, '$.payload.op'),
-                JSON_VALUE(payload, '$.op')
-            ) = 'd' THEN 1
-            ELSE 0
-        END AS is_deleted
+        CASE WHEN op = 'd' THEN 1 ELSE 0 END AS is_deleted
     FROM {source}
-    WHERE COALESCE(
-        JSON_VALUE(payload, '$.payload.op'),
-        JSON_VALUE(payload, '$.op')
-    ) IN ('c', 'u', 'd', 'r')
+    WHERE op IN ('c', 'u', 'd', 'r')
     """
     return [insert_sql]
 
@@ -293,47 +256,28 @@ def process_customers_cdc(table_env: StreamTableEnvironment, dlq_table: str) -> 
     INSERT INTO {sink}
     SELECT
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.customer_id'),
-            JSON_VALUE(payload, '$.payload.before.customer_id'),
-            JSON_VALUE(payload, '$.after.customer_id'),
-            JSON_VALUE(payload, '$.before.customer_id')
+            JSON_VALUE(after_data, '$.customer_id'),
+            JSON_VALUE(before_data, '$.customer_id')
         ) AS customer_id,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.email'),
-            JSON_VALUE(payload, '$.payload.before.email'),
-            JSON_VALUE(payload, '$.after.email'),
-            JSON_VALUE(payload, '$.before.email')
+            JSON_VALUE(after_data, '$.email'),
+            JSON_VALUE(before_data, '$.email')
         ) AS email,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.tier'),
-            JSON_VALUE(payload, '$.payload.before.tier'),
-            JSON_VALUE(payload, '$.after.tier'),
-            JSON_VALUE(payload, '$.before.tier')
+            JSON_VALUE(after_data, '$.tier'),
+            JSON_VALUE(before_data, '$.tier')
         ) AS tier,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.created_at'),
-            JSON_VALUE(payload, '$.payload.before.created_at'),
-            JSON_VALUE(payload, '$.after.created_at'),
-            JSON_VALUE(payload, '$.before.created_at')
+            JSON_VALUE(after_data, '$.created_at'),
+            JSON_VALUE(before_data, '$.created_at')
         ) AS created_at,
         COALESCE(
-            JSON_VALUE(payload, '$.payload.after.updated_at'),
-            JSON_VALUE(payload, '$.payload.before.updated_at'),
-            JSON_VALUE(payload, '$.after.updated_at'),
-            JSON_VALUE(payload, '$.before.updated_at')
+            JSON_VALUE(after_data, '$.updated_at'),
+            JSON_VALUE(before_data, '$.updated_at')
         ) AS updated_at,
-        CASE
-            WHEN COALESCE(
-                JSON_VALUE(payload, '$.payload.op'),
-                JSON_VALUE(payload, '$.op')
-            ) = 'd' THEN 1
-            ELSE 0
-        END AS is_deleted
+        CASE WHEN op = 'd' THEN 1 ELSE 0 END AS is_deleted
     FROM {source}
-    WHERE COALESCE(
-        JSON_VALUE(payload, '$.payload.op'),
-        JSON_VALUE(payload, '$.op')
-    ) IN ('c', 'u', 'd', 'r')
+    WHERE op IN ('c', 'u', 'd', 'r')
     """
     return [insert_sql]
 

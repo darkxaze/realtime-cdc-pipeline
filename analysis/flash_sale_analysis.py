@@ -23,13 +23,14 @@ SELECT
     flash_sale_avg_confirm_seconds,
     normal_avg_confirm_seconds,
     slowdown_factor,
+    flash_sale_order_count,
     flash_sale_revenue,
     normal_revenue,
     revenue_multiplier,
-    normal_cancel_rate,
     flash_sale_cancel_rate,
+    normal_cancel_rate,
     products_sold_out
-FROM gold.mart_flash_sale_analysis
+FROM default_gold.mart_flash_sale_analysis
 LIMIT 1
 """
 
@@ -38,13 +39,22 @@ LIMIT 1
 class FlashSaleMetrics:
     flash_sale_avg_confirm_seconds: float
     normal_avg_confirm_seconds: float
-    slowdown_factor: float
+    slowdown_factor: float | None
+    flash_sale_order_count: int
     flash_sale_revenue: float
     normal_revenue: float
     revenue_multiplier: float
-    normal_cancel_rate: float
     flash_sale_cancel_rate: float
+    normal_cancel_rate: float
     products_sold_out: int
+
+
+def _f(v: object, default: float = 0.0) -> float:
+    return float(v) if v is not None else default
+
+
+def _i(v: object, default: int = 0) -> int:
+    return int(v) if v is not None else default
 
 
 def _env(name: str, default: str) -> str:
@@ -68,21 +78,22 @@ def fetch_flash_sale_metrics(client: ClickHouseClient) -> FlashSaleMetrics:
     rows = client.execute(_MART_QUERY)
     if not rows:
         raise RuntimeError(
-            "gold.mart_flash_sale_analysis is empty; run dbt run --select mart_flash_sale_analysis "
+            "default_gold.mart_flash_sale_analysis is empty; run dbt run --select mart_flash_sale_analysis "
             "after flash sale load generator data exists"
         )
 
     row = rows[0]
     metrics = FlashSaleMetrics(
-        flash_sale_avg_confirm_seconds=float(row[0]),
-        normal_avg_confirm_seconds=float(row[1]),
-        slowdown_factor=float(row[2]),
-        flash_sale_revenue=float(row[3]),
-        normal_revenue=float(row[4]),
-        revenue_multiplier=float(row[5]),
-        normal_cancel_rate=float(row[6]),
-        flash_sale_cancel_rate=float(row[7]),
-        products_sold_out=int(row[8]),
+        flash_sale_avg_confirm_seconds=_f(row[0]),
+        normal_avg_confirm_seconds=_f(row[1]),
+        slowdown_factor=None if row[2] is None else _f(row[2]),
+        flash_sale_order_count=_i(row[3]),
+        flash_sale_revenue=_f(row[4]),
+        normal_revenue=_f(row[5]),
+        revenue_multiplier=_f(row[6]),
+        flash_sale_cancel_rate=_f(row[7]),
+        normal_cancel_rate=_f(row[8]),
+        products_sold_out=_i(row[9]),
     )
     for field_name, value in vars(metrics).items():
         if isinstance(value, float) and (math.isinf(value) or math.isnan(value)):
@@ -98,6 +109,7 @@ def print_report(metrics: FlashSaleMetrics) -> None:
     normal_avg = metrics.normal_avg_confirm_seconds
     flash_avg = metrics.flash_sale_avg_confirm_seconds
     slowdown = metrics.slowdown_factor
+    flash_orders = metrics.flash_sale_order_count
     flash_revenue = metrics.flash_sale_revenue
     normal_revenue = metrics.normal_revenue
     revenue_mult = metrics.revenue_multiplier
@@ -113,11 +125,19 @@ def print_report(metrics: FlashSaleMetrics) -> None:
     logger.info("Order Confirmation Latency")
     logger.info("  Normal traffic:        %.1f seconds", normal_avg)
     logger.info("  Flash sale:            %.1f seconds", flash_avg)
-    logger.info("  Slowdown factor:       %.1fx slower", slowdown)
+    if slowdown is None:
+        logger.info(
+            "  Slowdown factor:       N/A — run normal load first to generate confirmed orders"
+        )
+    else:
+        logger.info("  Slowdown factor:       %.1fx slower", slowdown)
     logger.info("")
-    logger.info("  Finding: Order confirmation is %.1fx slower during", slowdown)
-    logger.info("  flash sale — a bottleneck invisible to batch analytics.")
-    logger.info("  This metric exists because CDC captures every status transition.")
+    if slowdown is not None:
+        logger.info("  Finding: Order confirmation is %.1fx slower during", slowdown)
+        logger.info("  flash sale — a bottleneck invisible to batch analytics.")
+        logger.info("  This metric exists because CDC captures every status transition.")
+        logger.info("")
+    logger.info("Flash sale orders:       %s", flash_orders)
     logger.info("")
     logger.info("Revenue")
     logger.info("  Flash sale window:    £%s", f"{flash_revenue:,.2f}")
@@ -146,7 +166,7 @@ def main() -> None:
         client.disconnect()
 
     print_report(metrics)
-    logger.info("Flash sale report generated from gold.mart_flash_sale_analysis")
+    logger.info("Flash sale report generated from default_gold.mart_flash_sale_analysis")
 
 
 if __name__ == "__main__":

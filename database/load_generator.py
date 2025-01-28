@@ -180,8 +180,11 @@ def seed_customers_and_products(pool: ThreadedConnectionPool) -> tuple[int, int,
     """Bulk insert customers and products; counts and inventory range from env."""
     n_customers = _env_int("SEED_CUSTOMER_COUNT", 1000)
     n_products = _env_int("SEED_PRODUCT_COUNT", 200)
-    inv_min = _env_int("SEED_INVENTORY_MIN", 500)
-    inv_max = _env_int("SEED_INVENTORY_MAX", 5000)
+    # Low starting inventory makes flash sale products sell out during the 300 second
+    # window, which is the behaviour mart_flash_sale_analysis and the Grafana inventory
+    # panel are designed to show.
+    inv_min = _env_int("SEED_INVENTORY_MIN", 50)
+    inv_max = _env_int("SEED_INVENTORY_MAX", 200)
     if inv_min < 0 or inv_max < inv_min:
         raise ValueError(
             f"Invalid inventory bounds: SEED_INVENTORY_MIN={inv_min}, SEED_INVENTORY_MAX={inv_max}"
@@ -342,7 +345,15 @@ def transaction_new_order(
                 (qty, str(product_id), qty),
             )
             if cur.rowcount != 1:
-                raise RuntimeError("Inventory update did not affect exactly one row.")
+                # At 50 TPS with 20 hot products and multiple threads, inventory
+                # contention is expected. The guard WHERE inventory_count >= quantity
+                # prevents overselling. A rowcount of 0 means another thread won the
+                # race — skipping is correct.
+                # Another thread claimed this inventory first — skip silently.
+                # This is expected under concurrent flash sale load and should
+                # not count as an error.
+                conn.rollback()
+                return
 
 
 def transaction_status_update(conn: connection) -> None:

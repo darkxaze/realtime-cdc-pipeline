@@ -287,4 +287,4 @@ SELECT
     avg(total_amount) AS avg_order_value,
     toUInt32(countIf(status = 'cancelled')) AS cancellations_count
 FROM orders_current
-WHERE is_deleted = 0;
+GROUP BY toStartOfMinute(created_at);
