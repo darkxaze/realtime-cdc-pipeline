@@ -1,4 +1,5 @@
-# Stage 1: Postgres source only. WAL tuned for later logical replication (Debezium).
+# Stage 1: Postgres source (WAL tuned for logical replication).
+# Stage 2: Kafka ecosystem + Debezium CDC connector.
 
 services:
   postgres:
@@ -24,6 +25,87 @@ services:
     healthcheck:
       # Uses credentials from env_file; interval + retries as requested.
       test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      retries: 3
+
+  # Coordination service for Kafka broker cluster metadata (single-node here).
+  # No depends_on: first service in the stack; others wait on its healthcheck, not start.
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | nc localhost 2181"]
+      interval: 5s
+      retries: 3
+
+  # Event bus: Debezium publishes WAL changes here; Flink and Connect consume downstream.
+  # service_healthy on zookeeper: broker registration fails if ZK is up but not accepting sessions.
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # true: Debezium can auto-create CDC topics; production should pre-create topics with replication/partitions.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # Avro schema store for Debezium and Flink serializers; topics stay compact and versioned.
+  # service_healthy on kafka: registry bootstraps internal topics; a listening port is not enough.
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+
+  # Kafka Connect worker hosting the Postgres CDC connector (reads WAL via replication slot).
+  # JSON converters (not Avro): Debezium 2.4 image lacks Confluent/Apicurio Avro JARs; JSON keeps
+  # Stage 2 reproducible without custom Connect images while Flink can still ingest Debezium envelopes.
+  # service_healthy on kafka/postgres: Connect REST is useless if the broker or replication slot is not ready.
+  debezium:
+    image: debezium/connect:2.4
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    ports:
+      - "8083:8083"
+    environment:
+      BOOTSTRAP_SERVERS: kafka:29092
+      GROUP_ID: 1
+      CONFIG_STORAGE_TOPIC: connect_configs
+      OFFSET_STORAGE_TOPIC: connect_offsets
+      STATUS_STORAGE_TOPIC: connect_statuses
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8083/connectors"]
       interval: 5s
       retries: 3
 
