@@ -1,0 +1,105 @@
+version: 2
+
+sources:
+  - name: default
+    description: ClickHouse CDC sink tables (ReplacingMergeTree, populated by Flink materialized views).
+    database: default
+    tables:
+      - name: orders_current
+        description: >
+          Latest order header per order_id. Multiple physical versions per order_id
+          exist until background merge; staging uses FINAL for query-time deduplication.
+        # warn threshold means pipeline is slow but not broken
+        # error threshold means pipeline has likely stalled
+        # these thresholds are appropriate for a 10 TPS normal load pipeline
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 5, period: minute}
+          error_after: {count: 30, period: minute}
+        columns:
+          - name: order_id
+            description: Primary business key; ORDER BY key in ReplacingMergeTree.
+            data_tests:
+              - not_null
+          - name: customer_id
+            description: FK to customers_current.
+          - name: status
+            description: Order lifecycle state from Postgres CDC.
+            data_tests:
+              - accepted_values:
+                  values: ['pending', 'confirmed', 'shipped', 'delivered', 'cancelled']
+          - name: total_amount
+            description: Order total in currency units (Flink decimal.handling.mode=double).
+            data_tests:
+              - dbt_expectations.expect_column_values_to_be_between:
+                  min_value: 0
+          - name: created_at
+            description: Order placement time (UTC).
+          - name: updated_at
+            description: ReplacingMergeTree version column; highest wins at merge.
+          - name: is_deleted
+            description: CDC tombstone flag; 1 when order removed in Postgres.
+
+      - name: products_current
+        description: >
+          Catalog and live inventory per product_id. Use FINAL on reads when
+          correctness matters during high-TPS flash sale (see schema.sql).
+        # warn threshold means pipeline is slow but not broken
+        # error threshold means pipeline has likely stalled
+        # these thresholds are appropriate for a 10 TPS normal load pipeline
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 10, period: minute}
+          error_after: {count: 60, period: minute}
+        columns:
+          - name: product_id
+            description: Primary business key; ORDER BY key in ReplacingMergeTree.
+            data_tests:
+              - not_null
+          - name: sku
+            description: Stock keeping unit identifier.
+          - name: name
+            description: Product display name.
+          - name: category
+            description: Product category for reporting slices.
+          - name: price
+            description: Unit price in currency units.
+          - name: inventory_count
+            description: Live stock level; decremented by CDC during flash sale.
+            data_tests:
+              - dbt_expectations.expect_column_values_to_be_between:
+                  min_value: 0
+          - name: updated_at
+            description: ReplacingMergeTree version column; highest wins at merge.
+          - name: is_deleted
+            description: CDC tombstone flag; 1 when product removed in Postgres.
+
+      - name: order_metrics_per_minute
+        description: >
+          Per-minute aggregated order metrics written by Flink
+          order_metrics job. Append-only MergeTree table.
+        loaded_at_field: window_start
+        freshness:
+          warn_after: {count: 10, period: minute}
+          error_after: {count: 60, period: minute}
+        columns:
+          - name: window_start
+            description: Start of the 1-minute aggregation window (UTC)
+          - name: orders_count
+            description: Number of orders in this window
+          - name: revenue
+            description: Total revenue in this window
+          - name: avg_order_value
+            description: Average order value in this window
+          - name: cancellations_count
+            description: Number of cancellations in this window
+
+      - name: customers_current
+        description: Customer dimension from CDC sink (required by staging relationship tests and gold joins).
+        loaded_at_field: updated_at
+        freshness:
+          warn_after: {count: 10, period: minute}
+          error_after: {count: 60, period: minute}
+        columns:
+          - name: customer_id
+            description: Primary business key; join target for stg_orders.

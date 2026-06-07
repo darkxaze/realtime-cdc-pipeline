@@ -1,0 +1,25 @@
+name: cdc_analytics
+profile: cdc_analytics
+require-dbt-version: [">=1.8.0", "<2.0.0"]
+model-paths: ["models"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+models:
+  cdc_analytics:
+    staging:
+      materialized: incremental
+      schema: staging
+    gold:
+      materialized: table
+      schema: gold
+vars:
+  # update these vars to match your actual flash sale test times
+  flash_sale_start: '2099-01-01 00:00:00'
+  flash_sale_end: '2099-01-01 00:00:00'
+  low_stock_threshold: 10
+  max_order_amount: 100000
+  max_status_seconds: 86400
+  max_inventory: 10000
+  max_price: 10000

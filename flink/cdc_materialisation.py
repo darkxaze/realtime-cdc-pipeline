@@ -55,6 +55,11 @@ def create_kafka_source_raw(table_env: StreamTableEnvironment, topic: str) -> st
     group_id = f"cdc-materialisation-{topic}"
 
     # Raw format: Debezium JSON may include schema wrapper debezium-json cannot parse.
+    # Reverted to latest-offset after backfill completed.
+    # earliest-offset was used temporarily to replay 117 missing
+    # customers when customers_materialized topic was absent on
+    # initial run. latest-offset is correct for normal operation
+    # to avoid reprocessing all historical data on every restart.
     ddl = f"""
     CREATE TABLE {table_name} (
         payload STRING

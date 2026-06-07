@@ -1,0 +1,57 @@
+version: 2
+
+models:
+  - name: fct_order_performance
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+          - unique
+      - name: customer_tier
+        tests:
+          - accepted_values:
+              values: ['standard', 'premium', 'vip']
+              config:
+                severity: warn
+      - name: seconds_to_confirm
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 3600
+              config:
+                severity: warn
+      - name: order_context
+        tests:
+          - accepted_values:
+              values: ['flash_sale', 'normal']
+
+  - name: fct_revenue_hourly
+    description: Hourly revenue aggregation from per-minute metrics
+    columns:
+      - name: hour
+        data_tests:
+          - not_null
+      - name: orders_count
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+      - name: revenue
+        data_tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+
+  - name: mart_flash_sale_analysis
+    columns:
+      - name: slowdown_factor
+        tests:
+          # min_value 0 allows equal performance (1.0x).
+          # Below 0 is impossible and indicates a pipeline bug.
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0
+              max_value: 20
+      - name: flash_sale_avg_confirm_seconds
+        tests:
+          - not_null
+      - name: normal_avg_confirm_seconds
+        tests:
+          - not_null

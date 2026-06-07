@@ -1,0 +1,11 @@
+cdc_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: clickhouse
+      host: "{{ env_var('CLICKHOUSE_HOST') }}"
+      port: 8123
+      user: default
+      password: ""
+      schema: default
+      secure: false
